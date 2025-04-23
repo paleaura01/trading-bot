@@ -56,9 +56,11 @@ def register_callbacks(app):
         if strategy == "fear_greed":
             return [
                 html.H4(
-                    "Fear & Greed Strategy",
                     style={"display": "flex", "alignItems": "center", "gap": "0.5rem"},
-                    children=[html.I(className="fas fa-lightbulb", style={"color": "#F59E0B"}), "Fear & Greed Strategy"]
+                    children=[
+                        html.I(className="fas fa-lightbulb", style={"color": "#F59E0B"}),
+                        html.Span("Fear & Greed Strategy")
+                    ]
                 ),
                 html.Div(className="strategy-notes", children=[
                     html.P("• Buy when Fear & Greed < 40 with 50% of USDT"),
@@ -68,9 +70,11 @@ def register_callbacks(app):
             ]
         return [
             html.H4(
-                "Dual-Trade Strategy",
                 style={"display": "flex", "alignItems": "center", "gap": "0.5rem"},
-                children=[html.I(className="fas fa-lightbulb", style={"color": "#F59E0B"}), "Dual-Trade Strategy"]
+                children=[
+                    html.I(className="fas fa-lightbulb", style={"color": "#F59E0B"}),
+                    html.Span("Dual-Trade Strategy")
+                ]
             ),
             html.Div(className="strategy-notes", children=[
                 html.P("• Place simultaneous buy & sell orders daily"),
@@ -210,7 +214,7 @@ def register_callbacks(app):
             unreal_return, unreal_cls = "0.00%", "metric-value"
             avg_cost = f"${price:.2f}"
 
-            # Backtest‐based metrics
+            # Backtest-based metrics
             if backtest_data:
                 df = pd.DataFrame(backtest_data)
                 if len(df) > 1:
@@ -228,7 +232,7 @@ def register_callbacks(app):
                     if len(buys) > 0:
                         avg_cost = f"${buys['price'].mean():.2f}"
 
-            # Virtual‐vault–based metrics override
+            # Virtual-vault–based metrics override
             if vault_data:
                 vault = VirtualVault.from_dict(vault_data)
 
@@ -242,7 +246,7 @@ def register_callbacks(app):
                     unreal_return = f"{tpct:.2f}%"
                     unreal_cls = f"metric-value {'positive' if tpct >= 0 else 'negative'}"
 
-                # 🛠 Guard against missing 'action' column on vault history
+                # Guard against missing 'action' column on vault history
                 trade_df = vault.get_trade_history_df()
                 if "action" in trade_df.columns:
                     buy_trades = trade_df[trade_df["action"] == "BUY"]
@@ -291,7 +295,7 @@ def register_callbacks(app):
         return fig
 
     def create_portfolio_chart(df, additional_markers=None):
-        """Create a portfolio‐value chart from backtest or vault history."""
+        """Create a portfolio-value chart from backtest or vault history."""
         try:
             logger.info(f"Creating portfolio chart with {len(df)} data points")
             required = ["date", "portfolio_value", "action"]
