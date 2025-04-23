@@ -1,182 +1,166 @@
-import os
-import json
-import time
-from pathlib import Path
-from datetime import datetime
+# scripts/utils.py
 import requests
-import pandas as pd
+import logging
+import os
 from dotenv import load_dotenv
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
-
-# API credentials
 TRADEOGRE_KEY = os.getenv("TRADEOGRE_KEY")
 TRADEOGRE_SECRET = os.getenv("TRADEOGRE_SECRET")
-COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
 
-# Base URLs
-TRADEOGRE_BASE = "https://tradeogre.com/api/v1"
-COINGECKO_BASE = "https://api.coingecko.com/api/v3"
-FEARGREED_URL = "https://api.alternative.me/fng/"
+# TradeOgre API base URL
+BASE_URL = "https://tradeogre.com/api/v1"
 
-# Ensure data directory exists
-DATA_DIR = Path("data")
-DATA_DIR.mkdir(exist_ok=True)
-
-
-def fetch_historical_prices(days=365, force_refresh=False):
-    """Fetch historical BTC prices from CoinGecko or use cached data if recent."""
-    cache_file = DATA_DIR / "prices.json"
+def fetch_tradeogre_ticker(market_pair):
+    """
+    Fetch the current ticker price for a given market pair
     
-    # Check if cache exists and is recent (less than 30 minutes old)
-    if not force_refresh and cache_file.exists():
-        file_age = time.time() - cache_file.stat().st_mtime
-        if file_age < 1800:  # 30 minutes in seconds
-            try:
-                with open(cache_file, "r") as f:
-                    return json.load(f)
-            except json.JSONDecodeError:
-                pass  # Fall through to fresh fetch if cache is corrupted
-    
-    # Fetch fresh data
-    url = f"{COINGECKO_BASE}/coins/bitcoin/market_chart"
-    params = {
-        "vs_currency": "usd",
-        "days": days,
-        "interval": "daily"
-    }
-    headers = {}
-    if COINGECKO_API_KEY:
-        headers["x-cg-demo-api-key"] = COINGECKO_API_KEY
-    
+    Args:
+        market_pair (str): Market pair in format 'BTC-USDT'
+        
+    Returns:
+        float: Current price or 0 if error
+    """
     try:
-        response = requests.get(url, params=params, headers=headers)
-        response.raise_for_status()
+        url = f"{BASE_URL}/ticker/{market_pair}"
+        response = requests.get(url)
         data = response.json()
         
-        # Cache the results
-        with open(cache_file, "w") as f:
-            json.dump(data, f)
+        if data.get("success", False):
+            return float(data.get("price", 0))
+        else:
+            logger.error(f"Error fetching ticker: {data.get('error', 'Unknown error')}")
+            return 0
+    except Exception as e:
+        logger.error(f"Exception in fetch_tradeogre_ticker: {str(e)}")
+        return 0
+
+def fetch_tradeogre_orderbook(market_pair):
+    """
+    Fetch the current orderbook for a given market pair
+    
+    Args:
+        market_pair (str): Market pair in format 'BTC-USDT'
         
-        return data
-    except (requests.RequestException, json.JSONDecodeError) as e:
-        print(f"Error fetching historical prices: {e}")
-        # Try to use cached data as fallback
-        if cache_file.exists():
-            with open(cache_file, "r") as f:
-                return json.load(f)
-        # If no cache exists, return empty structure
-        return {"prices": []}
-
-
-def fetch_fear_greed(limit=365, force_refresh=False):
-    """Fetch Fear & Greed index data or use cached data if recent."""
-    cache_file = DATA_DIR / "fear_greed.json"
-    
-    # Check if cache exists and is recent
-    if not force_refresh and cache_file.exists():
-        file_age = time.time() - cache_file.stat().st_mtime
-        if file_age < 1800:  # 30 minutes in seconds
-            try:
-                with open(cache_file, "r") as f:
-                    return json.load(f)
-            except json.JSONDecodeError:
-                pass  # Fall through to fresh fetch
-    
-    # Fetch fresh data
-    params = {
-        "limit": limit,
-        "format": "json"
-    }
-    
+    Returns:
+        dict: Orderbook data with bids and asks or empty dict if error
+    """
     try:
-        response = requests.get(FEARGREED_URL, params=params)
-        response.raise_for_status()
+        url = f"{BASE_URL}/orders/{market_pair}"
+        response = requests.get(url)
         data = response.json()
         
-        # Cache the results
-        with open(cache_file, "w") as f:
-            json.dump(data, f)
+        if response.status_code == 200:
+            return {
+                "buy": data.get("buy", {}),
+                "sell": data.get("sell", {})
+            }
+        else:
+            logger.error(f"Error fetching orderbook: {data.get('error', 'Unknown error')}")
+            return {"buy": {}, "sell": {}}
+    except Exception as e:
+        logger.error(f"Exception in fetch_tradeogre_orderbook: {str(e)}")
+        return {"buy": {}, "sell": {}}
+
+def fetch_tradeogre_account():
+    """
+    Fetch account balances from TradeOgre
+    
+    Returns:
+        dict: Account balances or empty dict if error
+    """
+    try:
+        url = f"{BASE_URL}/account/balances"
+        response = requests.get(
+            url, 
+            auth=(TRADEOGRE_KEY, TRADEOGRE_SECRET)
+        )
+        data = response.json()
         
-        return data
-    except (requests.RequestException, json.JSONDecodeError) as e:
-        print(f"Error fetching Fear & Greed data: {e}")
-        # Try to use cached data as fallback
-        if cache_file.exists():
-            with open(cache_file, "r") as f:
-                return json.load(f)
-        # If no cache exists, return empty structure
-        return {"data": []}
+        if data.get("success", False):
+            # Return actual balances
+            return data.get("balances", {})
+        else:
+            logger.error(f"Error fetching account: {data.get('error', 'Unknown error')}")
+            return {}
+    except Exception as e:
+        logger.error(f"Exception in fetch_tradeogre_account: {str(e)}")
+        return {}
 
-
-def fetch_tradeogre_ticker(market="BTC-USDC"):
-    """Get current ticker information from TradeOgre."""
-    url = f"{TRADEOGRE_BASE}/ticker/{market}"
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        return response.json()
-    except (requests.RequestException, json.JSONDecodeError) as e:
-        print(f"Error fetching TradeOgre ticker: {e}")
-        return {"success": False, "error": str(e)}
-
-
-def fetch_tradeogre_orderbook(market="BTC-USDC"):
-    """Get current order book from TradeOgre."""
-    url = f"{TRADEOGRE_BASE}/orders/{market}"
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        return response.json()
-    except (requests.RequestException, json.JSONDecodeError) as e:
-        print(f"Error fetching TradeOgre orderbook: {e}")
-        return {"success": False, "error": str(e)}
-
-
-def place_tradeogre_order(side, market, quantity, price):
-    """Place a buy or sell order on TradeOgre."""
-    if not TRADEOGRE_KEY or not TRADEOGRE_SECRET:
-        return {"success": False, "error": "API credentials not configured"}
+def execute_live_trade(action, amount, price=None, market_pair="BTC-USDT"):
+    """
+    Execute a live trade on TradeOgre
     
-    endpoint = "/order/buy" if side.lower() == "buy" else "/order/sell"
-    url = f"{TRADEOGRE_BASE}{endpoint}"
-    
-    data = {
-        "market": market,
-        "quantity": quantity,
-        "price": price
-    }
-    
+    Args:
+        action (str): "BUY" or "SELL"
+        amount (float): Amount to buy or sell
+        price (float, optional): Price to buy/sell at. If None, executes at market price.
+        market_pair (str, optional): Market pair to trade on. Defaults to "BTC-USDT".
+        
+    Returns:
+        dict: Result of the trade operation
+    """
     try:
+        # Validate action
+        if action not in ["BUY", "SELL"]:
+            logger.error(f"Invalid action: {action}")
+            return {"success": False, "error": "Invalid action"}
+            
+        # Format amount to appropriate precision
+        if action == "BUY":
+            # For buying, amount is in base currency (BTC)
+            formatted_amount = f"{amount:.8f}"
+        else:
+            # For selling, amount is in quote currency (USDT)
+            formatted_amount = f"{amount:.8f}"
+            
+        # Format price if provided
+        formatted_price = f"{price:.8f}" if price is not None else None
+        
+        # Prepare data for the request
+        data = {
+            "market": market_pair,
+            "quantity": formatted_amount
+        }
+        
+        if formatted_price is not None:
+            data["price"] = formatted_price
+            
+        # Determine endpoint based on action
+        endpoint = "buy" if action == "BUY" else "sell"
+        url = f"{BASE_URL}/order/{endpoint}"
+        
+        # Make the request to the API
         response = requests.post(
             url,
-            auth=(TRADEOGRE_KEY, TRADEOGRE_SECRET),
-            data=data
+            data=data,
+            auth=(TRADEOGRE_KEY, TRADEOGRE_SECRET)
         )
-        response.raise_for_status()
-        return response.json()
-    except (requests.RequestException, json.JSONDecodeError) as e:
-        print(f"Error placing TradeOgre order: {e}")
-        return {"success": False, "error": str(e)}
-
-
-def prepare_price_data(price_data):
-    """Convert price data to a pandas DataFrame with datetime index."""
-    if not price_data or "prices" not in price_data:
-        return pd.DataFrame(columns=["timestamp", "price", "date"])
-    
-    df = pd.DataFrame(price_data["prices"], columns=["timestamp", "price"])
-    df["date"] = pd.to_datetime(df["timestamp"], unit="ms")
-    return df
-
-
-def prepare_fg_data(fg_data):
-    """Convert Fear & Greed data to a pandas DataFrame with datetime index."""
-    if not fg_data or "data" not in fg_data:
-        return pd.DataFrame(columns=["timestamp", "value", "value_classification", "date"])
-    
-    df = pd.DataFrame(fg_data["data"])
-    df["date"] = pd.to_datetime(df["timestamp"].astype(int), unit="s")
-    df["value"] = df["value"].astype(int)
-    return df
+        
+        # Parse response
+        result = response.json()
+        
+        if result.get("success", False):
+            logger.info(f"Successfully executed {action} order: {amount} @ {price or 'market'}")
+            return {
+                "success": True,
+                "action": action,
+                "quantity": amount,
+                "price": price,
+                "market": market_pair,
+                "order_id": result.get("uuid", "")
+            }
+        else:
+            logger.error(f"Error executing {action} order: {result.get('error', 'Unknown error')}")
+            return {
+                "success": False,
+                "error": result.get("error", "Unknown error"),
+                "action": action
+            }
+    except Exception as e:
+        logger.error(f"Exception in execute_live_trade: {str(e)}")
+        return {"success": False, "error": str(e), "action": action}
