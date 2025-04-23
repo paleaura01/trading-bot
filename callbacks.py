@@ -17,7 +17,8 @@ from scripts.utils import (
     fetch_tradeogre_orderbook,
     fetch_tradeogre_ticker,
     fetch_tradeogre_account,
-    execute_live_trade
+    execute_live_trade,
+    fetch_fear_and_greed
 )
 
 logger = logging.getLogger(__name__)
@@ -77,10 +78,9 @@ def register_callbacks(app):
                 ]
             ),
             html.Div(className="strategy-notes", children=[
-                html.P("• Place simultaneous buy & sell orders daily"),
-                html.P("• Buy at current price × (1 - buy discount)"),
-                html.P("• Sell at current price × (1 + sell premium)"),
-                html.P("• When one order fills, cancel the other"),
+                html.P("• Buy when Fear & Greed < threshold at discount price"),
+                html.P("• Sell when Fear & Greed > threshold at premium price"),
+                html.P("• Never sell at a loss - always above average cost"),
                 html.P("• Reinvest profits based on reinvestment rate")
             ])
         ]
@@ -160,6 +160,34 @@ def register_callbacks(app):
             logger.error(traceback.format_exc())
             return html.Div("Error loading market data")
 
+    # New callback for trade account info
+    @app.callback(
+        Output("trade-account-info", "children"),
+        Input("virtual-vault-store", "data")
+    )
+    def update_trade_account(vault_data):
+        """Display test-mode vault balances in 'Trade Account' card."""
+        try:
+            if vault_data:
+                vault = VirtualVault.from_dict(vault_data)
+                usdt, btc = vault.usdt_balance, vault.btc_balance
+            else:
+                usdt, btc = 100, 0.001
+            return [
+                html.Div(className="account-item", children=[
+                    html.Div(className="account-value", children=f"{btc:.8f}"),
+                    html.Div(className="account-label", children="BTC AVAILABLE")
+                ]),
+                html.Div(className="account-item", children=[
+                    html.Div(className="account-value", children=f"${usdt:.2f}"),
+                    html.Div(className="account-label", children="USDT AVAILABLE")
+                ])
+            ]
+        except Exception as e:
+            logger.error(f"Error in update_trade_account: {e}")
+            logger.error(traceback.format_exc())
+            return html.Div("Error loading trade account info")
+            
     @app.callback(
         Output("account-info", "children"),
         Input("interval-component", "n_intervals"),
@@ -391,6 +419,9 @@ def register_callbacks(app):
         State("input-buy-discount", "value"),
         State("input-sell-premium", "value"),
         State("input-reinvest-rate", "value"),
+        # New FG thresholds for Dual Trade
+        State("dual-input-fear", "value"),
+        State("dual-input-greed", "value"),
         # Virtual vault state
         State("virtual-vault-store", "data"),
         prevent_initial_call=True
@@ -399,6 +430,7 @@ def register_callbacks(app):
         n_clicks, mode, strategy_type,
         usdt, btc, fear, greed,
         base_btc, usdc_reserve, buy_discount, sell_premium, reinvest_rate,
+        dual_fear, dual_greed,
         vault_data
     ):
         logger.debug(f"execute_strategy clicked: n_clicks={n_clicks}, mode={mode}, strategy={strategy_type}")
@@ -485,7 +517,7 @@ def register_callbacks(app):
                         fig
                     )
 
-            # ─── Dual-Trade Strategy ───────────────────────────────────────────────
+            # ─── Dual-Trade Strategy with F&G Integration ───────────────────────────
             strategy = DualTradeStrategy(
                 base_btc=base_btc,
                 usdt_reserve=usdc_reserve,
@@ -495,14 +527,86 @@ def register_callbacks(app):
             )
 
             if mode == "live":
-                logger.info("Live Dual-Trade")
-                buy_order, sell_order = strategy.generate_orders(btc_price)
+                logger.info("Live Dual-Trade with F&G Integration")
+                # Get current Fear & Greed value
+                fg_value = fetch_fear_and_greed()
                 ts = datetime.now().strftime("%H:%M:%S")
+                cls = "hold"
                 log_item = html.Div(className="log-item", children=[
                     html.Span(ts, className="log-timestamp"),
-                    html.Span("DUAL TRADE", className="log-action"),
-                    html.Span(f" BUY {buy_order['btc_amount']:.8f} @ ${buy_order['price']:.2f} | SELL {sell_order['btc_amount']:.8f} @ ${sell_order['price']:.2f}")
+                    html.Span("HOLD", className="log-action"),
+                    html.Span(" - No conditions met")
                 ])
+                fig = no_update
+
+                # Generate buy and sell orders
+                buy_order, sell_order = strategy.generate_orders(btc_price)
+                
+                # Only buy when market sentiment is fearful
+                if fg_value is not None and fg_value < dual_fear:
+                    result = execute_live_trade("BUY", buy_order['btc_amount'], price=buy_order['price'])
+                    cls = "buy" if result.get("success") else "error"
+                    if result.get("success"):
+                        vault.execute_trade("BUY", buy_order['btc_amount'], buy_order['price'])
+                        log_item = html.Div(className=f"log-item {cls}", children=[
+                            html.Span(ts, className="log-timestamp"),
+                            html.Span("BUY", className=f"log-action {cls}"),
+                            html.Span(f" {buy_order['btc_amount']:.8f} @ ${buy_order['price']:.2f}")
+                        ])
+                    else:
+                        log_item = html.Div(className="log-item error", children=[
+                            html.Span(ts, className="log-timestamp"),
+                            html.Span("ERROR", className="log-action"),
+                            html.Span(f" {result.get('error','unknown')}")
+                        ])
+                
+                # Only sell when sentiment is greedy and price is above average cost
+                elif fg_value is not None and fg_value > dual_greed:
+                    # Calculate average cost from vault trade history
+                    avg_cost = 0
+                    trade_df = vault.get_trade_history_df()
+                    if "action" in trade_df.columns:
+                        buy_trades = trade_df[trade_df["action"] == "BUY"]
+                        if len(buy_trades) > 0:
+                            avg_cost = (buy_trades["price"] * buy_trades["btc_amount"]).sum() / buy_trades["btc_amount"].sum()
+                    
+                    # Only sell if price is above average cost
+                    if sell_order['price'] > avg_cost and avg_cost > 0:
+                        result = execute_live_trade("SELL", sell_order['btc_amount'], price=sell_order['price'])
+                        cls = "sell" if result.get("success") else "error"
+                        if result.get("success"):
+                            vault.execute_trade("SELL", sell_order['btc_amount'], sell_order['price'])
+                            log_item = html.Div(className=f"log-item {cls}", children=[
+                                html.Span(ts, className="log-timestamp"),
+                                html.Span("SELL", className=f"log-action {cls}"),
+                                html.Span(f" {sell_order['btc_amount']:.8f} @ ${sell_order['price']:.2f}")
+                            ])
+                        else:
+                            log_item = html.Div(className="log-item error", children=[
+                                html.Span(ts, className="log-timestamp"),
+                                html.Span("ERROR", className="log-action"),
+                                html.Span(f" {result.get('error','unknown')}")
+                            ])
+                    else:
+                        # Hold because sell price is below average cost
+                        log_item = html.Div(className="log-item hold", children=[
+                            html.Span(ts, className="log-timestamp"),
+                            html.Span("HOLD", className="log-action"),
+                            html.Span(f" - No profitable sell price: ${sell_order['price']:.2f} < ${avg_cost:.2f}")
+                        ])
+                else:
+                    # F&G value doesn't meet thresholds
+                    fg_status = "N/A" if fg_value is None else fg_value
+                    log_item = html.Div(className="log-item hold", children=[
+                        html.Span(ts, className="log-timestamp"),
+                        html.Span("HOLD", className="log-action"),
+                        html.Span(f" - F&G Index ({fg_status}) not at buy/sell levels")
+                    ])
+                
+                # Update chart if trade executed
+                if cls in ("buy", "sell"):
+                    fig = create_portfolio_chart(vault.get_portfolio_history_df(btc_price))
+
                 vault_val = vault.get_total_value_usd(btc_price)
                 return (
                     no_update,
@@ -510,7 +614,7 @@ def register_callbacks(app):
                     log_item,
                     f"${vault_val:.2f}",
                     f"{vault.btc_balance:.8f} BTC",
-                    no_update
+                    fig
                 )
 
             # ─── Dual Trade Backtest ──────────────────────────────────────────────

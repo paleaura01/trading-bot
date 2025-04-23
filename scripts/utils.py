@@ -2,6 +2,7 @@
 import requests
 import logging
 import os
+import json
 from dotenv import load_dotenv
 
 # Configure logging
@@ -164,3 +165,18 @@ def execute_live_trade(action, amount, price=None, market_pair="BTC-USDT"):
     except Exception as e:
         logger.error(f"Exception in execute_live_trade: {str(e)}")
         return {"success": False, "error": str(e), "action": action}
+
+def fetch_fear_and_greed(json_path="data/fear_greed.json"):
+    """
+    Fetch the latest Fear & Greed index value from a local JSON file.
+    Returns an integer 0–100, or None on error.
+    """
+    try:
+        with open(json_path, "r") as f:
+            data = json.load(f)
+        # The first element is the most recent
+        latest = data.get("data", [])[0]
+        return int(latest.get("value", 0))
+    except Exception as e:
+        logger.error(f"Error fetching Fear & Greed index: {e}")
+        return None
